@@ -1,0 +1,10 @@
+[project]
+name = "exchange-mail"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "fastmcp",
+    "exchangelib",
+    "python-dotenv",
+]
