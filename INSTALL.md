@@ -1,84 +1,95 @@
 # Install exchange-mail skill
 
-Please install the exchange-mail MCP skill by following these steps exactly.
-
 ## 1. Clone the repository
 
 ```bash
 git clone https://github.com/fundottz/ews-mcp.git ~/email-skill
+cd ~/email-skill
 ```
 
-## 2. Install uv (if not already installed)
+## 2. Install runtime dependencies
+
+Install `uv` with the official installer and make sure `~/.local/bin` is available for non-interactive processes (the systemd user unit below sets PATH explicitly, so shell startup files are not relied on at runtime):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## 3. Create the .env file
+Install `bws` (Bitwarden Secrets Manager CLI) so the sync job can inject `EXCHANGE_PASSWORD` without storing it in plain text inside the repo.
 
-Create `~/email-skill/.env` with the following content — ask me for the values if you don't have them:
+## 3. Create `.env`
 
-```
+Create `~/email-skill/.env`:
+
+```env
 EXCHANGE_EMAIL=
 EXCHANGE_PASSWORD=
 EXCHANGE_SERVER=
 ```
 
-## 4. Run the initial sync
+Notes:
+- `EXCHANGE_PASSWORD` may stay empty when you run sync via `scripts/run_sync.sh`
+- `scripts/run_sync.sh` expects the password in Bitwarden Secrets Manager under the secret key `OPENCLAW_EXCHANGE_PASSWORD`
+- `BWS_ACCESS_TOKEN` is read either from the environment or from `~/.bws_token`
 
-```bash
-cd ~/email-skill && uv run sync.py
-```
+## 4. Register the MCP server in OpenClaw
 
-## 5. Register the MCP server in OpenClaw
-
-Add the following entry to the `mcpServers` section of `~/.openclaw/openclaw.json`:
+Add this entry to the `mcpServers` section of `~/.openclaw/openclaw.json`:
 
 ```json
 "exchange-mail": {
   "command": "uv",
-  "args": ["--directory", "/root/email-skill", "run", "mcp_exchange.py"]
+  "args": ["--directory", "/home/openclaw/email-skill", "run", "mcp_exchange.py"]
 }
 ```
 
-If the file does not exist yet, create it with this content:
+## 5. Load the skill
 
-```json
-{
-  "mcpServers": {
-    "exchange-mail": {
-      "command": "uv",
-      "args": ["--directory", "/root/email-skill", "run", "mcp_exchange.py"]
-    }
-  }
-}
-```
-
-## 6. Load the skill
-
-Copy the skill into the OpenClaw skills directory:
+Copy the repository into the OpenClaw skills directory:
 
 ```bash
 cp -r ~/email-skill ~/.openclaw/skills/exchange-mail
 ```
 
-## 7. Set up sync cron job
+## 6. Install the sync as a systemd user timer
 
-Add this line to crontab (`crontab -e`):
-
-```
-*/15 * * * * cd /root/email-skill && uv run sync.py >> ~/.email_cache/sync.log 2>&1
-```
-
-## 8. Restart OpenClaw
+Do not use cron for this repo. The supported path is a systemd user service + timer.
 
 ```bash
-openclaw restart
+cd ~/email-skill
+./scripts/install_systemd_user.sh --disable-legacy-cron
 ```
 
-## 9. Verify
+What this does:
+- installs `exchange-mail-sync.service` and `exchange-mail-sync.timer` into `~/.config/systemd/user/`
+- enables the timer
+- starts one sync immediately
+- removes old `sync_exchange_mail.sh` cron lines if they exist
 
-Run:
+Tracked unit templates live in:
+- `assets/systemd/exchange-mail-sync.service.in`
+- `assets/systemd/exchange-mail-sync.timer.in`
+
+This keeps the deployable config in the repository, so the same setup can be reproduced on another machine without rebuilding the unit files by hand.
+
+## 7. Verify
+
+Check the timer and run status:
+
+```bash
+systemctl --user status exchange-mail-sync.timer
+systemctl --user status exchange-mail-sync.service
+systemctl --user list-timers --all | grep exchange-mail-sync
+```
+
+Run a manual sync if needed:
+
+```bash
+cd ~/email-skill
+./scripts/run_sync.sh
+```
+
+Then verify OpenClaw sees fresh cache data:
 
 ```bash
 openclaw mcp list

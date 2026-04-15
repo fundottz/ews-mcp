@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic Exchange mail cache sync
+
+[Timer]
+OnBootSec=3m
+OnCalendar=Mon..Fri *-*-* 04,08:00:00 Europe/Moscow
+OnCalendar=Mon..Fri *-*-* 09..18:00,30:00 Europe/Moscow
+OnCalendar=Sat,Sun *-*-* 00,04,08,12,16,20:00:00 Europe/Moscow
+AccuracySec=5m
+Persistent=true
+Unit=exchange-mail-sync.service
+
+[Install]
+WantedBy=timers.target
