@@ -2,6 +2,7 @@
 """Incremental sync from Exchange EWS to local SQLite cache."""
 
 import os
+import re
 import sqlite3
 import logging
 from datetime import datetime, timezone, timedelta
@@ -14,6 +15,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 DB_PATH = Path.home() / ".email_cache" / "mail.db"
 FIRST_SYNC_DAYS = 2
+DEFAULT_SYNC_FOLDERS = ["Входящие"]
 MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
 LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -69,12 +71,18 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def get_last_sync(conn: sqlite3.Connection, key: str) -> datetime:
+def get_last_sync(conn: sqlite3.Connection, key: str, fallback_key: str | None = None) -> datetime:
     row = conn.execute(
         "SELECT value FROM sync_state WHERE key = ?", (key,)
     ).fetchone()
     if row:
         return datetime.fromisoformat(row[0])
+    if fallback_key:
+        fallback_row = conn.execute(
+            "SELECT value FROM sync_state WHERE key = ?", (fallback_key,)
+        ).fetchone()
+        if fallback_row:
+            return datetime.fromisoformat(fallback_row[0])
     return datetime.now(timezone.utc) - timedelta(days=FIRST_SYNC_DAYS)
 
 
@@ -96,57 +104,131 @@ def to_utc(ews_dt) -> str:
         return str(ews_dt)
 
 
+def parse_sync_folders() -> list[str]:
+    raw = os.environ.get("EXCHANGE_SYNC_FOLDERS", "")
+    if not raw.strip():
+        return DEFAULT_SYNC_FOLDERS.copy()
+
+    parts = [
+        part.strip().lstrip("•*- ").strip()
+        for part in re.split(r"[\n,;]+", raw)
+    ]
+    folders = [part for part in parts if part]
+    return folders or DEFAULT_SYNC_FOLDERS.copy()
+
+
+def folder_path(folder) -> str:
+    return str(getattr(folder, "absolute", folder))
+
+
+def folder_state_key(folder) -> str:
+    return f"emails_last_sync:{folder_path(folder)}"
+
+
+def resolve_sync_folders(account: Account) -> list:
+    requested = parse_sync_folders()
+    by_name: dict[str, list] = {}
+    by_path: dict[str, list] = {}
+
+    for folder in account.root.walk():
+        name = getattr(folder, "name", "")
+        path = folder_path(folder)
+        if name:
+            by_name.setdefault(name, []).append(folder)
+        by_path.setdefault(path, []).append(folder)
+        mailbox_path = "/root/Корневой уровень хранилища/"
+        if path.startswith(mailbox_path):
+            by_path.setdefault(path[len(mailbox_path):], []).append(folder)
+
+    resolved = []
+    seen_paths = set()
+    for requested_name in requested:
+        matches = by_name.get(requested_name) or by_path.get(requested_name) or []
+        if not matches:
+            raise RuntimeError(f"Exchange folder not found: {requested_name}")
+        if len(matches) > 1:
+            paths = ", ".join(sorted({folder_path(folder) for folder in matches}))
+            raise RuntimeError(
+                f"Exchange folder name is ambiguous: {requested_name}. Matches: {paths}"
+            )
+        folder = matches[0]
+        path = folder_path(folder)
+        if path not in seen_paths:
+            resolved.append(folder)
+            seen_paths.add(path)
+
+    return resolved
+
+
 def sync_emails(account: Account, conn: sqlite3.Connection) -> int:
-    since = get_last_sync(conn, "emails_last_sync")
-    log.info(f"Syncing emails since {since.isoformat()}")
-
     tz = EWSTimeZone.from_timezone(MOSCOW_TZ)
-    since_ews = EWSDateTime.from_datetime(since).astimezone(tz)
+    selected_folders = resolve_sync_folders(account)
+    run_started = datetime.now(timezone.utc)
+    total_count = 0
 
-    count = 0
-    newest = since
-    folder = account.inbox
-    items = (
-        folder.all()
-        .filter(datetime_received__gt=since_ews)
-        .order_by("datetime_received")
-        .only("id", "sender", "subject", "text_body", "datetime_received",
-              "is_read", "has_attachments")
+    log.info(
+        "Syncing emails for folders: %s",
+        ", ".join(folder.name for folder in selected_folders),
     )
-    for item in items:
-        received_str = to_utc(item.datetime_received)
-        sender = ""
-        if item.sender:
-            sender = item.sender.email_address or item.sender.name or ""
 
-        conn.execute(
-            """INSERT OR REPLACE INTO emails
-               (id, folder, sender, subject, body, received, unread, has_attachments)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                item.id,
-                folder.name,
-                sender,
-                item.subject or "",
-                (item.text_body or "")[:4000],
-                received_str,
-                0 if item.is_read else 1,
-                1 if item.has_attachments else 0,
-            ),
+    for folder in selected_folders:
+        fallback_key = "emails_last_sync" if folder.name == "Входящие" else None
+        since = get_last_sync(conn, folder_state_key(folder), fallback_key=fallback_key)
+        since_ews = EWSDateTime.from_datetime(since).astimezone(tz)
+        folder_count = 0
+        newest = since
+
+        log.info("Syncing folder %s since %s", folder.name, since.isoformat())
+
+        items = (
+            folder.all()
+            .filter(datetime_received__gt=since_ews)
+            .order_by("datetime_received")
+            .only(
+                "id",
+                "sender",
+                "subject",
+                "text_body",
+                "datetime_received",
+                "is_read",
+                "has_attachments",
+            )
         )
-        count += 1
+        for item in items:
+            received_str = to_utc(item.datetime_received)
+            sender = ""
+            if item.sender:
+                sender = item.sender.email_address or item.sender.name or ""
 
-        received_aware = datetime.fromisoformat(received_str) if received_str else None
-        if received_aware and received_aware > newest:
-            newest = received_aware
+            conn.execute(
+                """INSERT OR REPLACE INTO emails
+                   (id, folder, sender, subject, body, received, unread, has_attachments)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item.id,
+                    folder.name,
+                    sender,
+                    item.subject or "",
+                    (item.text_body or "")[:4000],
+                    received_str,
+                    0 if item.is_read else 1,
+                    1 if item.has_attachments else 0,
+                ),
+            )
+            folder_count += 1
+            total_count += 1
 
-    conn.commit()
+            received_aware = datetime.fromisoformat(received_str) if received_str else None
+            if received_aware and received_aware > newest:
+                newest = received_aware
 
-    if count > 0:
-        set_last_sync(conn, "emails_last_sync", newest)
+        conn.commit()
+        set_last_sync(conn, folder_state_key(folder), newest if folder_count > 0 else run_started)
+        log.info("Synced %s new emails from %s", folder_count, folder.name)
 
-    log.info(f"Synced {count} new emails")
-    return count
+    set_last_sync(conn, "emails_last_sync", run_started)
+    log.info(f"Synced {total_count} new emails")
+    return total_count
 
 
 def sync_events(account: Account, conn: sqlite3.Connection) -> int:

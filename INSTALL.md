@@ -25,12 +25,14 @@ Create `~/email-skill/.env`:
 EXCHANGE_EMAIL=
 EXCHANGE_PASSWORD=
 EXCHANGE_SERVER=
+EXCHANGE_SYNC_FOLDERS=Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования
 ```
 
 Notes:
 - `EXCHANGE_PASSWORD` may stay empty when you run sync via `scripts/run_sync.sh`
 - `scripts/run_sync.sh` expects the password in Bitwarden Secrets Manager under the secret key `OPENCLAW_EXCHANGE_PASSWORD`
 - `BWS_ACCESS_TOKEN` is read either from the environment or from `~/.bws_token`
+- `EXCHANGE_SYNC_FOLDERS` controls which mailbox folders are cached. Use a comma-separated list, for example: `Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования`
 
 ## 4. Register the MCP server in OpenClaw
 
