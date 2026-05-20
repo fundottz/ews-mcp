@@ -59,6 +59,46 @@ class TestCursorHelpers(unittest.TestCase):
         self.assertFalse(sync.cursor_after_item(cur, make_item("a", t)))
         self.assertTrue(sync.cursor_after_item(cur, make_item("n", t)))
 
+    def test_cursor_after_item_skips_none_received(self):
+        t = datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc)
+        cur = sync.FolderCursor(received=t, item_id="")
+        bad = make_item("bad", t)
+        bad.datetime_received = None
+        self.assertFalse(sync.cursor_after_item(cur, bad))
+
+
+class TestFetchEmailBatch(unittest.TestCase):
+    def test_same_timestamp_fills_batch_via_pagination(self):
+        t = datetime(2026, 5, 19, 12, 0, tzinfo=timezone.utc)
+        items = [make_item(f"id{i:03d}", t) for i in range(120)]
+        cursor = sync.FolderCursor(received=t, item_id="id005")
+        batch_size = 50
+
+        class FakeQS:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def filter(self, **_kwargs):
+                return self
+
+            def order_by(self, *_args):
+                return self
+
+            def only(self, *_fields):
+                return self
+
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    return self._rows[key]
+                return self._rows[key]
+
+        folder = SimpleNamespace()
+        folder.all = lambda: FakeQS(items)
+
+        batch = sync.fetch_email_batch(folder, cursor, batch_size)
+        self.assertEqual(len(batch), batch_size)
+        self.assertEqual(batch[0].id, "id006")
+        self.assertEqual(batch[-1].id, "id055")
 
 class TestSyncState(unittest.TestCase):
     def setUp(self):
@@ -128,7 +168,6 @@ class TestSyncState(unittest.TestCase):
         self.assertEqual(count, 2)
         rows = self.conn.execute("SELECT id FROM emails").fetchall()
         self.assertEqual({r[0] for r in rows}, {"done", "new1"})
-
 
 class TestMainExitCode(unittest.TestCase):
     def test_partial_status_yields_partial_exit(self):

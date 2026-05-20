@@ -217,7 +217,7 @@ def to_aware_datetime(ews_dt: Any) -> datetime | None:
 def cursor_after_item(cursor: FolderCursor, item: Any) -> bool:
     received = to_aware_datetime(item.datetime_received)
     if received is None:
-        return True
+        return False
     item_id = str(getattr(item, "id", "") or "")
     if received > cursor.received:
         return True
@@ -273,8 +273,7 @@ def fetch_email_batch(
 ) -> list[Any]:
     """Fetch next batch after cursor (overlap applied to cursor before call)."""
     since_ews = EWSDateTime.from_datetime(cursor.received).astimezone(ews_timezone())
-    # Over-fetch one page from EWS, then apply (received, id) cursor in Python.
-    fetch_size = batch_size + 10
+    page_size = batch_size + 10
     qs = (
         folder.all()
         .filter(datetime_received__gte=since_ews)
@@ -289,14 +288,21 @@ def fetch_email_batch(
             "has_attachments",
         )
     )
-    raw = list(qs[:fetch_size])
     batch: list[Any] = []
-    for item in raw:
-        if not cursor_after_item(cursor, item):
-            continue
-        batch.append(item)
-        if len(batch) >= batch_size:
+    offset = 0
+    while len(batch) < batch_size:
+        raw = list(qs[offset : offset + page_size])
+        if not raw:
             break
+        for item in raw:
+            if not cursor_after_item(cursor, item):
+                continue
+            batch.append(item)
+            if len(batch) >= batch_size:
+                break
+        if len(raw) < page_size:
+            break
+        offset += page_size
     return batch
 
 
