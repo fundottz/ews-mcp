@@ -2,9 +2,18 @@
 """MCP server for Exchange email/calendar — reads local SQLite cache only."""
 
 import sqlite3
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+
+from tzutil import (
+    TIMEZONE_LINE,
+    TZ_LABEL,
+    display_event_range,
+    display_long,
+    display_short,
+    sql_cutoff_hours_ago,
+    sql_cutoff_hours_from_now,
+)
 
 DB_PATH = Path.home() / ".email_cache" / "mail.db"
 
@@ -21,18 +30,13 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def hours_ago(h: float) -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=h)).isoformat()
-
-
-def hours_from_now(h: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=h)).isoformat()
-
-
 def _fmt_email_row(r) -> str:
     unread_mark = "●" if r["unread"] else "○"
     attach = " 📎" if r["has_attachments"] else ""
-    return f"{unread_mark} [{r['received'][:16]}] {r['sender']}: {r['subject']}{attach}\n  id: {r['id']}"
+    return (
+        f"{unread_mark} [{display_short(r['received'])}] {r['sender']}: {r['subject']}{attach}\n"
+        f"  id: {r['id']}"
+    )
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────────
@@ -44,7 +48,7 @@ def list_emails(
     unread_only: bool = False,
     since_hours: float = 48,
 ) -> str:
-    """List recent emails from the local cache.
+    """List recent emails from the local cache (all times MSK).
 
     Args:
         folder: Mailbox folder name (default: all folders)
@@ -53,7 +57,7 @@ def list_emails(
         since_hours: Only emails newer than this many hours (default: 48)
     """
     conn = get_db()
-    since = hours_ago(since_hours)
+    since = sql_cutoff_hours_ago(since_hours)
     query = "SELECT id, sender, subject, received, unread, has_attachments FROM emails WHERE received >= ?"
     params: list = [since]
     if folder:
@@ -92,7 +96,7 @@ def get_email(email_id: str) -> str:
     return (
         f"From: {row['sender']}\n"
         f"Subject: {row['subject']}\n"
-        f"Received: {row['received']}\n"
+        f"Received: {display_short(row['received'])}\n"
         f"Folder: {row['folder']}\n"
         f"Unread: {'Yes' if row['unread'] else 'No'}\n"
         f"Has attachments: {'Yes' if row['has_attachments'] else 'No'}\n"
@@ -116,9 +120,9 @@ def search_emails(
         since_days: Search only within last N days (default: 14)
     """
     conn = get_db()
-    since = hours_ago(since_days * 24)
+    since = sql_cutoff_hours_ago(since_days * 24)
     like = f"%{query}%"
-    sql = """SELECT id, sender, subject, received, unread
+    sql = """SELECT id, sender, subject, received, unread, has_attachments
            FROM emails
            WHERE received >= ?
              AND (subject LIKE ? OR sender LIKE ? OR body LIKE ?)"""
@@ -158,15 +162,15 @@ def list_events(
     since_hours: float = 0,
     next_hours: float = 24,
 ) -> str:
-    """List calendar events from the local cache.
+    """List calendar events from the local cache (times in MSK).
 
     Args:
         since_hours: Include events starting this many hours in the past (default: 0 = now)
         next_hours: Include events starting within this many hours from now (default: 24)
     """
     conn = get_db()
-    since = hours_ago(since_hours)
-    until = hours_from_now(next_hours)
+    since = sql_cutoff_hours_ago(since_hours)
+    until = sql_cutoff_hours_from_now(next_hours)
 
     rows = conn.execute(
         """SELECT subject, start, end, location, attendees, body
@@ -178,7 +182,7 @@ def list_events(
     conn.close()
 
     if not rows:
-        return f"No events in the next {next_hours} hours."
+        return f"No events in the next {next_hours} hours ({TZ_LABEL})."
 
     lines = []
     for r in rows:
@@ -189,7 +193,7 @@ def list_events(
         else:
             attendees_str = ', '.join(attendee_list) or '—'
         lines.append(
-            f"📅 {r['start'][11:16]}–{r['end'][11:16]}  {r['subject']}\n"
+            f"📅 {display_event_range(r['start'], r['end'])}  {r['subject']}\n"
             f"   Location: {r['location'] or '—'}\n"
             f"   Attendees: {attendees_str}"
         )
@@ -198,7 +202,7 @@ def list_events(
 
 @mcp.tool()
 def sync_status() -> str:
-    """Show last sync timestamps and cache statistics."""
+    """Show last sync timestamps and cache statistics (times in MSK)."""
     conn = get_db()
     states = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM sync_state").fetchall()}
     email_count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
@@ -206,10 +210,11 @@ def sync_status() -> str:
     conn.close()
 
     return (
+        f"{TIMEZONE_LINE}\n"
         f"Emails in cache: {email_count}\n"
         f"Events in cache: {event_count}\n"
-        f"Last email sync: {states.get('emails_last_sync', 'never')}\n"
-        f"Last event sync: {states.get('events_last_sync', 'never')}"
+        f"Last email sync: {display_long(states.get('emails_last_sync', 'never'))}\n"
+        f"Last event sync: {display_long(states.get('events_last_sync', 'never'))}"
     )
 
 

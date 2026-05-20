@@ -34,5 +34,4 @@ Gives access to the user's Exchange mailbox and calendar. Data is read from a lo
 - Email IDs come from `list_emails` or `search_emails` — pass them to `get_email`
 - Cache reflects last sync; if data seems stale, report `sync_status` to the user
 - Calendar events default to the next 24 hours; adjust `next_hours` for longer windows
-- Install cache sync via `scripts/install_systemd_user.sh`; do not rely on cron for this repo
-- `scripts/run_sync.sh` injects `EXCHANGE_PASSWORD` from Bitwarden secret `OPENCLAW_EXCHANGE_PASSWORD` by default
+- Cache sync: `scripts/run_sync.sh` or systemd timer (`INSTALL.md`). Credentials via `EXCHANGE_*` env (`.env` or bws through `run_sync.sh`).

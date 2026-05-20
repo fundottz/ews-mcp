@@ -15,7 +15,7 @@ Install `uv` with the official installer and make sure `~/.local/bin` is availab
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Install `bws` (Bitwarden Secrets Manager CLI) so the sync job can inject `EXCHANGE_PASSWORD` without storing it in plain text inside the repo.
+Optional: `bws` (Bitwarden Secrets Manager CLI) if you use `scripts/run_sync.sh` to load secrets into env.
 
 ## 3. Create `.env`
 
@@ -29,10 +29,8 @@ EXCHANGE_SYNC_FOLDERS=Входящие,00 Пишут мне,01 Follow-up,04 Meet
 ```
 
 Notes:
-- `EXCHANGE_PASSWORD` may stay empty when you run sync via `scripts/run_sync.sh`
-- `scripts/run_sync.sh` expects the password in Bitwarden Secrets Manager under the secret key `OPENCLAW_EXCHANGE_PASSWORD`
-- `BWS_ACCESS_TOKEN` is read either from the environment or from `~/.bws_token`
-- `EXCHANGE_SYNC_FOLDERS` controls which mailbox folders are cached. Use a comma-separated list, for example: `Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования`
+- `EXCHANGE_*` are read from the environment (`sync.py` loads `.env` if present). Use `.env` locally, or `scripts/run_sync.sh` to set env from Bitwarden (`OPENCLAW_EXCHANGE_PASSWORD`, `BWS_ACCESS_TOKEN` or `~/.bws_token`).
+- `EXCHANGE_SYNC_FOLDERS` — comma-separated list, e.g. `Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования`.
 
 ## 4. Register the MCP server in OpenClaw
 
