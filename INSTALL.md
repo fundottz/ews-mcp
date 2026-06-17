@@ -25,7 +25,7 @@ Create `~/email-skill/.env`:
 EXCHANGE_EMAIL=
 EXCHANGE_PASSWORD=
 EXCHANGE_SERVER=
-EXCHANGE_SYNC_FOLDERS=Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования
+EXCHANGE_SYNC_FOLDERS=Входящие,00 Пишут мне,01 Follow-up,04 Meeting,Согласования,Отправленные
 ```
 
 Notes:

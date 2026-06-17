@@ -89,6 +89,30 @@ def get_account() -> Account:
     )
 
 
+def _ensure_email_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(emails)")}
+    for column, decl in (
+        ("to_recipients", "TEXT"),
+        ("cc_recipients", "TEXT"),
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE emails ADD COLUMN {column} {decl}")
+
+
+def format_recipients(mailboxes: Any) -> str:
+    if not mailboxes:
+        return "[]"
+    out: list[dict[str, str]] = []
+    for mailbox in mailboxes:
+        if mailbox is None:
+            continue
+        email = (getattr(mailbox, "email_address", None) or "").strip()
+        name = (getattr(mailbox, "name", None) or "").strip()
+        if email or name:
+            out.append({"email": email, "name": name})
+    return json.dumps(out, ensure_ascii=False)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -100,7 +124,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             body        TEXT,
             received    TEXT NOT NULL,
             unread      INTEGER NOT NULL DEFAULT 1,
-            has_attachments INTEGER NOT NULL DEFAULT 0
+            has_attachments INTEGER NOT NULL DEFAULT 0,
+            to_recipients TEXT,
+            cc_recipients TEXT
         );
 
         CREATE TABLE IF NOT EXISTS events (
@@ -123,6 +149,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_events_start    ON events(start);
         """
     )
+    _ensure_email_columns(conn)
     conn.commit()
 
 
@@ -250,8 +277,9 @@ def upsert_email(
 
     conn.execute(
         """INSERT OR REPLACE INTO emails
-           (id, folder, sender, subject, body, received, unread, has_attachments)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, folder, sender, subject, body, received, unread, has_attachments,
+            to_recipients, cc_recipients)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item.id,
             folder_name,
@@ -261,6 +289,8 @@ def upsert_email(
             received_str,
             0 if item.is_read else 1,
             1 if item.has_attachments else 0,
+            format_recipients(getattr(item, "to_recipients", None)),
+            format_recipients(getattr(item, "cc_recipients", None)),
         ),
     )
     return load_time(received_str)
@@ -286,6 +316,8 @@ def fetch_email_batch(
             "datetime_received",
             "is_read",
             "has_attachments",
+            "to_recipients",
+            "cc_recipients",
         )
     )
     batch: list[Any] = []

@@ -26,6 +26,12 @@ def make_item(item_id: str, received: datetime, subject: str = "sub") -> SimpleN
         text_body="body",
         is_read=False,
         has_attachments=False,
+        to_recipients=[
+            SimpleNamespace(email_address="adotts@mts.ru", name="Дотц Андрей"),
+        ],
+        cc_recipients=[
+            SimpleNamespace(email_address="nnbabin@mts.ru", name="Бабин Никита"),
+        ],
     )
 
 
@@ -100,6 +106,42 @@ class TestFetchEmailBatch(unittest.TestCase):
         self.assertEqual(batch[0].id, "id006")
         self.assertEqual(batch[-1].id, "id055")
 
+
+class TestFormatRecipients(unittest.TestCase):
+    def test_format_recipients_json(self):
+        raw = sync.format_recipients(
+            [
+                SimpleNamespace(email_address="a@mts.ru", name="A"),
+                SimpleNamespace(email_address="", name="B"),
+            ]
+        )
+        data = json.loads(raw)
+        self.assertEqual(data[0]["email"], "a@mts.ru")
+        self.assertEqual(data[1]["name"], "B")
+
+
+class TestEmailSchema(unittest.TestCase):
+    def test_ensure_email_columns_migrates_legacy_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            """CREATE TABLE emails (
+                id TEXT PRIMARY KEY,
+                folder TEXT NOT NULL,
+                sender TEXT,
+                subject TEXT,
+                body TEXT,
+                received TEXT NOT NULL,
+                unread INTEGER NOT NULL DEFAULT 1,
+                has_attachments INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        sync._ensure_email_columns(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(emails)")}
+        self.assertIn("to_recipients", cols)
+        self.assertIn("cc_recipients", cols)
+        conn.close()
+
+
 class TestSyncState(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -111,9 +153,29 @@ class TestSyncState(unittest.TestCase):
         self.conn.close()
         Path(self.tmp.name).unlink(missing_ok=True)
 
+    def test_upsert_stores_recipients(self):
+        folder = SimpleNamespace(name="Входящие", absolute="/inbox")
+        t0 = datetime(2026, 5, 19, 8, 0, tzinfo=timezone.utc)
+        item = make_item("id1", t0)
+        sync.upsert_email(self.conn, folder.name, item)
+        row = self.conn.execute(
+            "SELECT to_recipients, cc_recipients FROM emails WHERE id = ?",
+            ("id1",),
+        ).fetchone()
+        to_data = json.loads(row[0])
+        cc_data = json.loads(row[1])
+        self.assertEqual(to_data[0]["email"], "adotts@mts.ru")
+        self.assertEqual(cc_data[0]["name"], "Бабин Никита")
+
     def test_checkpoint_saved_per_batch(self):
         folder = SimpleNamespace(name="Входящие", absolute="/inbox")
         t0 = datetime(2026, 5, 19, 8, 0, tzinfo=timezone.utc)
+        sync.save_folder_cursor(
+            self.conn,
+            folder,
+            sync.FolderCursor(received=t0 - timedelta(minutes=1), item_id=""),
+            commit=True,
+        )
         items = [make_item(f"id{i}", t0 + timedelta(minutes=i)) for i in range(5)]
 
         batches = [items[:2], items[2:4], items[4:5], []]
